@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><title>ทดสอบตรรกะ</title></head>
+<body><pre id="out">running</pre>
+<script src="../data/questions.js"></script>
+<script src="../js/highlight.js"></script>
+<script src="../js/exam.js"></script>
+<script>
+var out = [], fails = 0;
+function ok(c, msg) { if (!c) { fails++; out.push('FAIL ' + msg); } }
+try {
+  var E = ExamCore, bank = E.buildBank(EXAM_DATA);
+  ok(bank.items.length === 355, 'items 355 got ' + bank.items.length);
+  ok(bank.chapters.length === 16, '16 chapters');
+  var refs = bank.items.filter(function (i) { return i.prevId; }).map(function (i) { return i.id; });
+  out.push('ref questions: ' + refs.join(' '));
+  ok(refs.join(',') === '2-12,4-14,5-2,5-10,5-14', 'refs detected');
+  bank.items.forEach(function (i) { if (i.prevId) ok(!!i.prevCode, 'prevCode for ' + i.id); });
+  ok(bank.units.reduce(function (s, u) { return s + u.ids.length; }, 0) === 355, 'units cover all');
+
+  // seeded rng
+  var seed = 1;
+  function rng() { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }
+
+  function checkSet(ids, tag) {
+    var set = {}; ids.forEach(function (id) { set[id] = 1; });
+    ok(Object.keys(set).length === ids.length, tag + ' no duplicates');
+    ids.forEach(function (id) {
+      var it = bank.byId[id];
+      if (it.prevId) ok(set[it.prevId], tag + ' ' + id + ' missing prev ' + it.prevId);
+      // ข้อที่ถูกอ้างถึง ต้องมีข้อที่อ้างตามมาด้วย (ในโหมดสุ่ม)
+    });
+    for (var k = 1; k < ids.length; k++) {
+      var a = bank.byId[ids[k - 1]], b = bank.byId[ids[k]];
+      ok(a.ch < b.ch || (a.ch === b.ch && a.idx < b.idx), tag + ' order ' + ids[k - 1] + '>' + ids[k]);
+    }
+  }
+
+  var trials = 0;
+  [1, 2, 3, 5, 10, 20, 39, 40, 60, 100, 200, 354, 355, 999].forEach(function (n) {
+    for (var t = 0; t < 300; t++) {
+      var ids = E.pickRandom(bank, n, rng);
+      var want = Math.min(n, 355);
+      ok(ids.length === want, 'random n=' + n + ' got ' + ids.length);
+      checkSet(ids, 'random n=' + n);
+      // ห้ามมีข้อต้นกลุ่มโดยไม่มีข้อที่ตามมา (กลุ่มต้องครบ)
+      var set = {}; ids.forEach(function (id) { set[id] = 1; });
+      bank.units.forEach(function (u) {
+        var c = u.ids.filter(function (id) { return set[id]; }).length;
+        ok(c === 0 || c === u.ids.length, 'unit split n=' + n + ' ' + u.ids.join('+'));
+      });
+      trials++;
+    }
+  });
+  out.push('random trials: ' + trials);
+
+  // withPrereqs
+  var w = E.withPrereqs(bank, ['5-14', '0-3', '2-12']);
+  ok(w.join(',') === '0-3,2-11,2-12,5-13,5-14', 'withPrereqs ' + w.join(','));
+
+  // chapters
+  var c = E.idsOfChapters(bank, [6]);
+  ok(c.length === 25 && c[0] === '6-0' && c[24] === '6-24', 'chapter 7 ids');
+
+  // createExam + grade
+  var ex = E.createExam(bank, E.idsOfChapters(bank, [4, 5]), { mode: 'chapters', label: 'x', minutes: 30 }, rng);
+  ok(ex.items.length === 40 && ex.endsAt - ex.startedAt === 1800000, 'createExam');
+  ex.items.forEach(function (x) { ok(x.order.slice().sort().join('') === '0123', 'perm ' + x.id); });
+  ex.items.forEach(function (x, i) { if (i % 2 === 0) ex.answers[x.id] = bank.byId[x.id].answer; else if (i % 4 === 1) ex.answers[x.id] = (bank.byId[x.id].answer + 1) % 4; });
+  var g = E.grade(bank, ex);
+  ok(g.correct === 20 && g.total === 40 && g.pct === 50, 'grade ' + JSON.stringify([g.correct, g.total, g.pct]));
+  ok(g.unanswered === 10 && g.wrongIds.length === 20, 'grade wrong/unanswered');
+  ok(g.per[4][1] === 20 && g.per[5][1] === 20, 'per chapter');
+
+  // chapterStats: ใหม่สุดก่อน
+  var st = E.chapterStats([{ per: { 0: [10, 10] } }, { per: { 0: [0, 10], 1: [5, 10] } }], 16);
+  ok(st[0].pct === Math.round(10 / 17 * 100) && st[0].attempts === 2, 'stats weighted ' + st[0].pct);
+  ok(st[1].pct === 50 && st[2].pct === null, 'stats other');
+
+  // highlighter
+  var h = highlightCpp('#include <Wire.h>\nint x = 0x1F; // c\nSerial.println("a<b");');
+  ok(h.indexOf('<span class="tk-pre">#include &lt;Wire.h&gt;</span>') === 0, 'hl pre');
+  ok(h.indexOf('<span class="tk-type">int</span>') > 0 && h.indexOf('tk-num">0x1F') > 0, 'hl type/num');
+  ok(h.indexOf('<span class="tk-fn">println</span>') > 0 && h.indexOf('"a&lt;b"') > 0, 'hl fn/str');
+  // ทุกโค้ดในคลังไฮไลต์แล้วข้อความเหมือนเดิม
+  var tmp = document.createElement('div');
+  bank.items.forEach(function (i) { if (i.code) { tmp.innerHTML = highlightCpp(i.code); ok(tmp.textContent === i.code, 'hl roundtrip ' + i.id); } });
+} catch (err) { fails++; out.push('ERROR ' + err.stack); }
+out.unshift(fails ? 'RESULT: ' + fails + ' FAILURES' : 'RESULT: ALL PASSED');
+document.getElementById('out').textContent = out.slice(0, 60).join('\n');
+</script></body></html>

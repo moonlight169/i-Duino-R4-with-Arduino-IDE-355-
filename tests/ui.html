@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><title>ทดสอบ UI</title>
+<style>html,body{margin:0;height:100%}iframe{border:0;width:100vw;height:100vh;display:block}#out{position:fixed;left:-9999px}</style></head>
+<body><pre id="out">running</pre><iframe id="f"></iframe>
+<script>
+// ใช้ผ่านเซิร์ฟเวอร์ (python -m http.server) เท่านั้น: tests/ui.html?step=home|exam|palette|result|review|flow&theme=dark
+var q = new URLSearchParams(location.search), step = q.get('step') || 'flow', theme = q.get('theme');
+var out = [], fails = 0;
+function ok(c, m) { if (!c) { fails++; out.push('FAIL ' + m); } }
+// หน้านี้ล้าง localStorage ทั้งหมด: ยอมให้รันเฉพาะในเครื่อง กันลบประวัติของผู้ใช้บนเว็บจริง
+if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+  document.body.innerHTML = '<p style="font-family:sans-serif;padding:24px">หน้าทดสอบนี้ใช้ได้เฉพาะในเครื่อง (localhost) เท่านั้น</p>';
+  throw new Error('test page disabled outside localhost');
+}
+localStorage.clear();
+if (theme) localStorage.setItem('iduinoR4.theme', JSON.stringify(theme));
+var f = document.getElementById('f');
+var jsErrors = [];
+if (q.get('w')) { f.style.width = q.get('w') + 'px'; f.style.height = (q.get('h') || 844) + 'px'; }
+f.src = '../index.html';
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }
+f.onload = async function () {
+  var w = f.contentWindow, d = w.document;
+  function $(s) { return d.querySelector(s); }
+  function click(s) { var el = typeof s === 'string' ? $(s) : s; if (!el) throw new Error('no ' + s); el.click(); }
+  function st() { return w.__app.state(); }
+  w.addEventListener('error', function (e) { jsErrors.push(e.message); });
+  try {
+    if (step === 'home') { done(); return; }
+    if (step === 'all') {
+      // แสดงทั้ง 355 ข้อทีละข้อ แล้วเปิดเฉลยทั้งชุด
+      click('[data-act="ch-all"]');
+      click('[data-act="time"][data-v="90"]');
+      click('#start-btn');
+      var ex = st().exam, bank = w.__app.bank;
+      ok(ex.items.length === 355, 'all 355');
+      for (var i = 0; i < ex.items.length; i++) {
+        click('[data-act="goto"][data-v="' + i + '"]');
+        var it = bank.byId[ex.items[i].id];
+        ok(d.querySelectorAll('.choices .choice').length === 4, 'choices ' + it.id);
+        ok(!!$('.code-block') === !!(it.code || it.prevCode), 'code block ' + it.id);
+        ok($('.q-text').textContent === it.q, 'q text ' + it.id);
+        if (i % 2) click(d.querySelectorAll('.choices .choice')[i % 4]);
+      }
+      ok(d.querySelectorAll('.pal.answered').length === 177, 'answered 177');
+      click('[data-act="submit"]');
+      click(d.querySelector('#modal-root [data-m="ok"]'));
+      await wait(50);
+      ok(d.querySelectorAll('.bar-row').length === 16, '16 bars');
+      click('[data-act="review"]');
+      ok(d.querySelectorAll('.rv').length === 355, 'review 355');
+      ok(d.querySelectorAll('.rv .expl').length === 355, 'expl 355');
+      ['wrong', 'skip', 'flag', 'all'].forEach(function (f2) { click('[data-act="filter"][data-v="' + f2 + '"]'); });
+      click('[data-act="theme"]');
+      click('[data-act="result"]'); click('[data-act="home"]');
+      ok($('.weak-item') && $('.hist tbody tr'), 'home after');
+      // ค่าผิดรูปใน localStorage ต้องไม่ทำให้เว็บพัง
+      localStorage.setItem('iduinoR4.prefs', '{bad json');
+      localStorage.setItem('iduinoR4.history', 'null');
+      f.onload = null;
+      w.location.reload();
+      await wait(800);
+      d = w.document;
+      ok(d.querySelector('[data-act="start"]'), 'survives corrupt storage');
+      done(); return;
+    }
+    // เลือกบท 5 กับ 6 (มีโค้ดและข้อ "จากโค้ดข้อที่แล้ว")
+    click('[data-act="ch-none"]');
+    [4, 5].forEach(function (c) { var cb = $('[data-ch="' + c + '"]'); cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); });
+    click('[data-act="time"][data-v="30"]');
+    click('#start-btn');
+    ok(st().view === 'exam' && st().exam.items.length === 40, 'started 40');
+    ok(!!$('#timer'), 'timer shown');
+    // ไปข้อ 2 ของบท 6 (มีโค้ด) = ลำดับ 21 ในชุด
+    click('[data-act="goto"][data-v="21"]');
+    ok($('.code-block .tk-kw'), 'code highlighted');
+    ok(d.body.textContent.indexOf('โค้ดจากข้อที่แล้ว') < 0, 'no prev code on 6-2');
+    click('[data-act="next"]');
+    ok(d.body.textContent.indexOf('โค้ดจากข้อที่แล้ว') >= 0, 'prev code shown on 6-3');
+    click('[data-act="prev"]');
+    var ex = st().exam, bank = w.__app.bank;
+    // ตอบถูกครึ่งหนึ่ง ผิดบางข้อ เว้นบางข้อ
+    ex.items.forEach(function (x, i) {
+      click('[data-act="goto"][data-v="' + i + '"]');
+      var ans = bank.byId[x.id].answer;
+      if (i % 3 === 0) return; // เว้น
+      var v = i % 3 === 1 ? ans : (ans + 1) % 4;
+      click('[data-act="pick"][data-v="' + v + '"]');
+    });
+    click('[data-act="goto"][data-v="21"]');
+    click('[data-act="flag"]');
+    ok($('.pal.flagged') && $('.pal.answered'), 'palette states');
+    ok(JSON.parse(localStorage.getItem('iduinoR4.current')).flags[ex.items[21].id], 'saved to storage');
+    if (step === 'exam') { done(); return; }
+    if (step === 'palette') { click('[data-act="pal-open"]'); done(); return; }
+    click('[data-act="submit"]');
+    ok(d.querySelector('#modal-root .modal'), 'confirm modal');
+    click(d.querySelector('#modal-root [data-m="ok"]'));
+    await wait(50);
+    ok(st().view === 'result', 'result view');
+    var g = w.ExamCore.grade(bank, st().done);
+    ok(g.correct === 13 && g.unanswered === 14, 'grade ' + g.correct + '/' + g.unanswered);
+    ok(d.querySelectorAll('.bar-row').length === 2, '2 bars');
+    var hist = JSON.parse(localStorage.getItem('iduinoR4.history'));
+    ok(hist.length === 1 && hist[0].correct === 13, 'history saved');
+    ok(!localStorage.getItem('iduinoR4.current'), 'current cleared');
+    if (step === 'result') { done(); return; }
+    click('[data-act="review"]');
+    ok(d.querySelectorAll('.rv').length === 40, 'review all 40');
+    click('[data-act="filter"][data-v="wrong"]');
+    ok(d.querySelectorAll('.rv').length === 27, 'review wrong 27 got ' + d.querySelectorAll('.rv').length);
+    if (step === 'review') { w.scrollTo(0, 0); done(); return; }
+    click('[data-act="retry-wrong"]');
+    var r = st().exam;
+    var wrongSet = {}; g.wrongIds.forEach(function (id) { wrongSet[id] = 1; });
+    r.items.forEach(function (x) { var it = bank.byId[x.id]; ok(wrongSet[x.id] || r.items.some(function (y) { return bank.byId[y.id].prevId === x.id; }), 'retry extra ' + x.id); });
+    r.items.forEach(function (x) { var p = bank.byId[x.id].prevId; if (p) ok(r.items.some(function (y) { return y.id === p; }), 'retry missing prev of ' + x.id); });
+    out.push('retry size ' + r.items.length + ' (wrong ' + g.wrongIds.length + ')');
+    click('[data-act="exit"]');
+    ok(st().view === 'home' && $('.resume'), 'resume card');
+    ok($('.weak-item'), 'weak chapters shown');
+    // random mode
+    click('[data-act="discard"]'); click(d.querySelector('#modal-root [data-m="ok"]')); await wait(50);
+    click('[data-act="mode"][data-v="random"]');
+    click('[data-act="n"][data-v="20"]');
+    click('[data-act="time"][data-v="0"]');
+    click('#start-btn');
+    ok(st().exam.items.length === 20 && !$('#timer'), 'random 20 no timer');
+    // time out: เริ่มชุดสุ่มแบบจับเวลา (เปิด modal ยืนยันทิ้งชุดเดิม)
+    click('[data-act="exit"]');
+    click('[data-act="time"][data-v="30"]');
+    click('#start-btn');
+    click(d.querySelector('#modal-root [data-m="ok"]')); await wait(50);
+    ok(st().exam.items.length === 20 && $('#timer'), 'random 20 with timer');
+    st().exam.endsAt = Date.now() - 1000;
+    setTimeout(function () {
+      ok(st().view === 'result', 'auto submit on timeout');
+      ok(JSON.parse(localStorage.getItem('iduinoR4.history')).length === 2, 'history 2');
+      done();
+    }, 1500);
+  } catch (e) { fails++; out.push('ERROR ' + e.stack); done(); }
+};
+function done() {
+  if (jsErrors.length) { fails += jsErrors.length; out.push('JS ERRORS: ' + jsErrors.join(' | ')); }
+  out.unshift(fails ? 'RESULT: ' + fails + ' FAILURES' : 'RESULT: ALL PASSED');
+  document.getElementById('out').textContent = out.join('\n');
+  document.title = 'done';
+}
+</script></body></html>
